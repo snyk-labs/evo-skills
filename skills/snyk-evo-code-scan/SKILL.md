@@ -22,7 +22,7 @@ Copy this checklist and work through it in order:
 ```
 - [ ] 1. Snyk CLI with `rift test` available
 - [ ] 2. CLI authenticated
-- [ ] 3. Scan run, results saved
+- [ ] 3. Scan run, outcome (findings / clean / failed) determined from results.json
 - [ ] 4. Findings summarized for the user
 ```
 
@@ -75,13 +75,17 @@ Run from the project root (or `cd` there first). Scans can take several minutes 
 
 ```bash
 mkdir -p .snyk-evo
+rm -f .snyk-evo/results.json .snyk-evo/results.sarif
 "$SNYK_BIN" rift test --experimental \
   --json-file-output=.snyk-evo/results.json \
   --sarif-file-output=.snyk-evo/results.sarif \
   > .snyk-evo/console.txt 2>&1
-echo "exit code: $?"
+scan_rc=$?
 cat .snyk-evo/console.txt
+sh "$SKILL_DIR/scripts/summarize-results.sh" .snyk-evo/results.json "$scan_rc"
 ```
+
+The `rm -f` matters: a results file left over from an earlier run would otherwise be mistaken for the result of a scan that failed.
 
 Useful flags (check `"$SNYK_BIN" rift test --help` for the current list, since the command is experimental):
 
@@ -95,14 +99,25 @@ Useful flags (check `"$SNYK_BIN" rift test --help` for the current list, since t
 | `--include-ignores` | Include findings that have been ignored in Snyk |
 | `-d` | Debug logging (very verbose; use when diagnosing failures) |
 
-Exit codes follow Snyk CLI conventions: `0` no issues found, `1` issues found (the scan worked), `2` the scan failed, `3` nothing supported to scan. Treat `1` as success with findings, not as an error.
+**Do not decide whether the scan found anything from the exit code.** `rift test` returns `0` both when it finds vulnerabilities and when it finds none, so `0` only means the scan ran. It does not follow the usual Snyk convention of `1` for findings (`1` has not been observed, but if you see it, treat it like `0` and trust the results file). Observed behavior:
+
+| Situation | Exit code | `results.json` | Console |
+|-----------|-----------|----------------|---------|
+| Vulnerabilities found | `0` | `{"findings":[...]}` | `N vulnerabilities found.` |
+| Clean project | `0` | `{"findings":[]}` | `No vulnerabilities found.` |
+| Scan failed (bad token, nothing scannable, ...) | `2` | not written | an `ERROR` block |
+
+`summarize-results.sh` applies these rules and prints `scan outcome: findings`, `clean`, or `failed`. It exits `0` when the scan completed (with or without findings) and `1` when it did not. Report exactly what it says: never describe a `failed` outcome as "no issues found", and never describe a `clean` outcome as a failure because of the exit code. It uses `jq` or `python3` when installed; otherwise it falls back to `grep` and lists only severity and title, so read `results.json` for locations and details.
+
+`results.sarif` currently contains the same JSON as `results.json`, not SARIF, so don't pass it to tools that expect SARIF; use `results.json`.
 
 The scan may also write `rift.log` (full details) and `fixes.md` (fix prompts for each finding) in the working directory; read them if present. Add `.snyk-evo/`, `rift.log`, and `fixes.md` to `.gitignore` or delete them afterwards unless the user wants them kept; do not commit scan output unasked.
 
 ### 4. Report the results
 
-Summarize for the user, most severe first:
+Use the `scan outcome` from step 3 and summarize for the user, most severe first:
 
+- The outcome (`findings`, `clean`, or `failed`). If `failed`, say so and why instead of reporting results.
 - Total findings by severity.
 - For each high/critical finding: title, file and line, why it is exploitable, and the suggested fix.
 - Where the full results are (`.snyk-evo/results.json`, `results.sarif`, `fixes.md`).
@@ -115,6 +130,8 @@ Only change code to fix findings if the user asks. After fixing, re-run the scan
 |---------|---------------|
 | `Command is experimental (SNYK-CLI-0015)` | Add `--experimental`. |
 | `missing Snyk organization UUID — run snyk auth or pass --org` | Almost always means the CLI is **not authenticated** or the token is invalid. Run `check-snyk-auth.sh`. If auth is fine, pass `--org=<org-id>` or run `snyk config set org=<org-id>`. |
+| `no scannable files found here` (exit `2`, no results file) | The directory has no source files the scan can use: everything was ignored, binary, empty, or over 1 MB. Run from the project root, or check `.gitignore`/`.snykignore`. |
+| `Unspecified Error (SNYK-CLI-0000)` with exit `2` | The scan failed; read the detail lines below the error. Bad credentials produce this too, so re-run `check-snyk-auth.sh`. |
 | `401 Unauthorized` / `SNYK-0005` | Token invalid, expired, or wrong region. Re-authenticate or set `SNYK_API`. |
 | `code scanning is off ... until an admin fixes it` | The organization does not have Snyk Code / Evo code scanning enabled. A Snyk org admin must enable it, or use `--org` for an org where it is enabled. |
 | `rift test --help` prints the general CLI help | The CLI is too old. Re-run `install-snyk-cli.sh` with `SNYK_FORCE_INSTALL=1` (or `SNYK_CLI_CHANNEL=preview`). |

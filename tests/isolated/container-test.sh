@@ -115,7 +115,57 @@ else
   bad "'snyk auth --auth-type=token' prints login URL and waits" "rc=$rc $(head -10 /tmp/tokenflow.out)"
 fi
 
-# 11. Real end-to-end scan when a token is supplied.
+# 11. summarize-results.sh classifies results from the results file, not the exit code.
+SUM="$SKILL/scripts/summarize-results.sh"
+sdir="$(mktemp -d)"
+printf '%s' '{"findings":[{"title":"SQL injection in /user","severity":"high","locations":[{"file_path":"app.py","from_line":16,"to_line":17}],"fix_plan":"x"},{"title":"OS command injection","severity":"critical","description":"mentions \"title\":\"decoy\"","locations":[{"file_path":"app.py","from_line":24,"to_line":24}],"fix_plan":"y"}]}' >"$sdir/findings.json"
+printf '%s' '{"findings":[]}' >"$sdir/clean.json"
+printf 'not json' >"$sdir/garbage.json"
+have_parser="grep fallback"
+if command -v jq >/dev/null 2>&1; then have_parser=jq; elif command -v python3 >/dev/null 2>&1; then have_parser=python3; fi
+
+sh "$SUM" "$sdir/findings.json" 0 >"$sdir/o1" 2>&1; rc=$?
+if [ $rc -eq 0 ] && grep -q '^scan outcome: findings' "$sdir/o1" && grep -q '^findings: 2' "$sdir/o1" \
+   && grep -q 'by severity: critical=1, high=1' "$sdir/o1" && ! grep -q decoy "$sdir/o1"; then
+  ok "summarize-results.sh: exit 0 with findings is reported as findings, most severe first ($have_parser)"
+else
+  bad "summarize-results.sh reports findings despite exit 0" "rc=$rc $(cat "$sdir/o1")"
+fi
+if grep -m1 '^- ' "$sdir/o1" | grep -q '^- \[critical\]'; then
+  ok "summarize-results.sh lists the most severe finding first"
+else
+  bad "summarize-results.sh lists the most severe finding first" "$(cat "$sdir/o1")"
+fi
+
+sh "$SUM" "$sdir/clean.json" 0 >"$sdir/o2" 2>&1; rc=$?
+if [ $rc -eq 0 ] && grep -q '^scan outcome: clean' "$sdir/o2"; then
+  ok "summarize-results.sh: exit 0 with empty findings is clean"
+else
+  bad "summarize-results.sh reports clean" "rc=$rc $(cat "$sdir/o2")"
+fi
+
+sh "$SUM" "$sdir/clean.json" 2 >"$sdir/o3" 2>&1; rc=$?
+if [ $rc -eq 1 ] && grep -q '^scan outcome: failed' "$sdir/o3"; then
+  ok "summarize-results.sh: CLI exit 2 is failed even if a results file exists"
+else
+  bad "summarize-results.sh treats exit 2 as failed" "rc=$rc $(cat "$sdir/o3")"
+fi
+
+sh "$SUM" "$sdir/missing.json" 0 >"$sdir/o4" 2>&1; rc=$?
+if [ $rc -eq 1 ] && grep -q '^scan outcome: failed' "$sdir/o4"; then
+  ok "summarize-results.sh: missing results file is failed, never clean"
+else
+  bad "summarize-results.sh treats a missing results file as failed" "rc=$rc $(cat "$sdir/o4")"
+fi
+
+sh "$SUM" "$sdir/garbage.json" 0 >"$sdir/o5" 2>&1; rc=$?
+if [ $rc -eq 1 ] && grep -q '^scan outcome: failed' "$sdir/o5"; then
+  ok "summarize-results.sh: unparseable results file is failed"
+else
+  bad "summarize-results.sh treats garbage results as failed" "rc=$rc $(cat "$sdir/o5")"
+fi
+
+# 12. Real end-to-end scan when a token is supplied.
 if [ -n "$real_token" ]; then
   export SNYK_TOKEN="$real_token"
   if sh "$SKILL/scripts/check-snyk-auth.sh" "$SNYK_BIN" >/tmp/auth-real.out 2>&1; then
@@ -138,12 +188,44 @@ if [ -n "$real_token" ]; then
   else
     bad "authenticated 'snyk rift test --experimental' completed" "rc=$rc $(tail -15 .snyk-evo/console.txt)"
   fi
+  sh "$SUM" .snyk-evo/results.json "$rc" >/tmp/sum-real.out 2>&1
+  src=$?
+  if [ $src -eq 0 ] && grep -q '^scan outcome: findings' /tmp/sum-real.out; then
+    ok "summarize-results.sh reports findings for the vulnerable fixture (scan exit $rc): $(grep '^findings:' /tmp/sum-real.out)"
+  else
+    bad "summarize-results.sh reports findings for the vulnerable fixture" "rc=$src $(cat /tmp/sum-real.out)"
+  fi
   for f in results.json results.sarif; do
     if [ -s ".snyk-evo/$f" ]; then ok "$f written"; else bad "$f written"; fi
   done
   echo "  ---- console output (tail) ----"
   tail -40 .snyk-evo/console.txt | sed 's/^/  | /'
   find "$work" -maxdepth 2 -type f | sed 's/^/  | /'
+
+  # A clean project must be reported as clean (this is where an exit-code check would go wrong).
+  clean="$(mktemp -d)"
+  mkdir -p "$clean/.snyk-evo"
+  printf 'def add(a, b):\n    return a + b\n' >"$clean/calc.py"
+  (cd "$clean" && timeout 1800 "$SNYK_BIN" rift test --experimental --json-file-output=.snyk-evo/results.json >.snyk-evo/console.txt 2>&1)
+  crc=$?
+  sh "$SUM" "$clean/.snyk-evo/results.json" "$crc" >/tmp/sum-clean.out 2>&1
+  if grep -q '^scan outcome: clean' /tmp/sum-clean.out; then
+    ok "summarize-results.sh reports a clean project as clean (scan exit $crc)"
+  else
+    bad "summarize-results.sh reports a clean project as clean" "scan rc=$crc $(cat /tmp/sum-clean.out) $(tail -5 "$clean/.snyk-evo/console.txt")"
+  fi
+
+  # A scan that cannot run (nothing scannable) must be reported as failed.
+  empty="$(mktemp -d)"
+  mkdir -p "$empty/.snyk-evo"
+  (cd "$empty" && timeout 600 "$SNYK_BIN" rift test --experimental --json-file-output=.snyk-evo/results.json >.snyk-evo/console.txt 2>&1)
+  erc=$?
+  sh "$SUM" "$empty/.snyk-evo/results.json" "$erc" >/tmp/sum-empty.out 2>&1
+  if [ $erc -ne 0 ] && grep -q '^scan outcome: failed' /tmp/sum-empty.out; then
+    ok "summarize-results.sh reports a scan with nothing scannable as failed (scan exit $erc)"
+  else
+    bad "summarize-results.sh reports a failed scan as failed" "scan rc=$erc $(cat /tmp/sum-empty.out)"
+  fi
   if [ -n "${RESULTS_OUT:-}" ] && [ -d "$RESULTS_OUT" ]; then
     cp -R .snyk-evo "$RESULTS_OUT/" 2>/dev/null
     for f in rift.log fixes.md; do [ -f "$f" ] && cp "$f" "$RESULTS_OUT/"; done
