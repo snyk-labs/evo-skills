@@ -18,7 +18,7 @@ if [ -n "${SNYK_TOKEN:-}" ]; then
 elif [ -n "${SNYK_OAUTH_TOKEN:-}" ]; then
   source_desc="SNYK_OAUTH_TOKEN environment variable"
 else
-  source_desc="stored CLI config (snyk auth)"
+  source_desc="stored CLI config from snyk auth (if any)"
 fi
 
 if out="$("$snyk" whoami --experimental 2>&1)" && [ -n "$out" ]; then
@@ -37,7 +37,7 @@ echo "authenticated: no"
 echo "credential source tried: $source_desc"
 reason="$(printf '%s\n' "$out" | grep -E 'ERROR|Status:' | sed 's/^ *//; s/ *$//' | paste -sd ';' -)"
 [ -n "$reason" ] && echo "reason: $reason"
-if [ "$source_desc" != "stored CLI config (snyk auth)" ]; then
+if [ -n "${SNYK_TOKEN:-}${SNYK_OAUTH_TOKEN:-}" ]; then
   echo "The credential was rejected. Check that it is valid, not expired, and for the right region (SNYK_API)."
 fi
 exit 1
