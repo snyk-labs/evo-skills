@@ -13,7 +13,7 @@ snyk rift test --experimental
 
 The command is **experimental**: `--experimental` is mandatory, and flags and output may change. It needs a recent Snyk CLI (it is present in 1.1308.x stable) that is authenticated to a Snyk account whose organization can run code scans.
 
-Scripts referenced below live in this skill's `scripts/` directory. Resolve them relative to this `SKILL.md`.
+Helper scripts live in this skill's `scripts/` directory. Set `SKILL_DIR` to the absolute path of the directory containing this `SKILL.md` (for example `~/.cursor/skills/snyk-evo-code-scan`) so the commands below work from the project directory.
 
 ## Workflow
 
@@ -29,9 +29,12 @@ Copy this checklist and work through it in order:
 ### 1. Get a Snyk CLI that supports `rift test`
 
 ```bash
-SNYK_BIN="$(sh scripts/install-snyk-cli.sh | tail -n1)"
+SKILL_DIR=/absolute/path/to/snyk-evo-code-scan
+SNYK_BIN="$(sh "$SKILL_DIR/scripts/install-snyk-cli.sh")"
 "$SNYK_BIN" --version
 ```
+
+The script logs progress to stderr and prints only the binary path to stdout, so don't merge the two streams when capturing it.
 
 The script reuses a `snyk` already on `PATH` if it supports `rift test`. Otherwise it downloads the standalone binary for the current OS/architecture from `downloads.snyk.io`, verifies its SHA-256 checksum, and installs it to `~/.local/bin` (no root needed). Override with `SNYK_INSTALL_DIR=...`, or `SNYK_CLI_CHANNEL=preview` if stable lacks the command.
 
@@ -42,12 +45,12 @@ Alternatives if the script cannot run: `npm install -g snyk`, `brew tap snyk/tap
 ### 2. Make sure the CLI is authenticated
 
 ```bash
-sh scripts/check-snyk-auth.sh "$SNYK_BIN"
+sh "$SKILL_DIR/scripts/check-snyk-auth.sh" "$SNYK_BIN"
 ```
 
-Exit code 0 means authenticated; skip to step 3. Otherwise authenticate with one of the methods below. **Pick the method based on what is available — do not guess:**
+Exit code 0 means authenticated; skip to step 3. Exit code 1 means not authenticated; the output names the credential source it tried and the reason (for example `401 Unauthorized`). Authenticate with one of the methods below. **Pick the method based on what is available — do not guess:**
 
-1. **A token is already in the environment** (`SNYK_TOKEN` is set): nothing to do; the CLI reads it automatically. If the check still fails, the token is invalid, expired, or for another region (see Regions below).
+1. **`SNYK_TOKEN` is already set** in the environment: the CLI reads it automatically, so if the check passed there is nothing to do. If the check failed with `401`, the token is invalid, expired, or belongs to another region. If the user's region is unknown, you may retry the check once with each regional `SNYK_API` (see Regions below). If none work, ask the user for a new token or offer the browser login (method 3). `SNYK_TOKEN` overrides stored credentials, so `unset SNYK_TOKEN` before using method 3.
 2. **The user can give you a token** (personal API token from https://app.snyk.io/account, or a service account token): ask the user to set it as the `SNYK_TOKEN` environment variable for your session (or in their agent's secrets settings). If they hand it to you directly, export it rather than passing it on the command line:
 
    ```bash
@@ -59,12 +62,12 @@ Exit code 0 means authenticated; skip to step 3. Otherwise authenticate with one
    - **The agent runs on the user's own machine** (local IDE/terminal): run `"$SNYK_BIN" auth`. It tries to open a browser; it also prints a URL starting with `https://app.snyk.io/oauth2/authorize?...`. Show the user that URL. The OAuth callback goes to `http://127.0.0.1:8080` on **this** machine, so it only completes in a browser on the same machine.
    - **The agent runs remotely** (cloud agent, container, SSH, CI): use `"$SNYK_BIN" auth --auth-type=token`. It prints a URL like `https://app.snyk.io/login?token=...`. The user can open this in a browser on any device; the CLI polls Snyk and finishes on its own once they log in, storing an API token in the CLI config.
 
-   Tell the user exactly which URL to open, wait for the auth process to exit, then re-run `check-snyk-auth.sh`.
+   Tell the user exactly which URL to open. Keep the auth process running while they log in: the URL is tied to that process, so if it is killed or times out, start a new one and send the new URL. Poll `check-snyk-auth.sh` (or wait for the auth process to exit) every 10-15 seconds for up to about 5 minutes, then continue. If the user does not complete login in that time, stop the auth process and ask them to tell you when they are ready.
 4. **Service accounts with OAuth client credentials**: `"$SNYK_BIN" auth --auth-type=oauth --client-id="$SNYK_CLIENT_ID" --client-secret="$SNYK_CLIENT_SECRET"`.
 
 If you cannot authenticate (no token, user unavailable for the browser step), stop and tell the user what is needed. Do not try other workarounds.
 
-**Regions:** accounts outside the default US-01 region need the matching API endpoint when using a token, e.g. `export SNYK_API=https://api.eu.snyk.io` (also `api.us.snyk.io`, `api.au.snyk.io`), or `"$SNYK_BIN" config set endpoint=<url>`. The browser OAuth flow handles regions automatically.
+**Regions:** the default endpoint is US-01 (`https://api.snyk.io`). Tokens from other regions need the matching endpoint: `https://api.us.snyk.io` (US-02), `https://api.eu.snyk.io` (EU), or `https://api.au.snyk.io` (AU). Set it with `export SNYK_API=<url>` or `"$SNYK_BIN" config set endpoint=<url>`. The browser OAuth flow handles regions automatically.
 
 ### 3. Run the scan
 

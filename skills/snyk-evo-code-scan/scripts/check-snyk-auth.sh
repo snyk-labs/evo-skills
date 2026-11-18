@@ -21,7 +21,8 @@ else
   source_desc="stored CLI config (snyk auth)"
 fi
 
-if user="$("$snyk" whoami --experimental 2>/dev/null)" && [ -n "$user" ]; then
+if out="$("$snyk" whoami --experimental 2>&1)" && [ -n "$out" ]; then
+  user="$(printf '%s\n' "$out" | tail -n1)"
   echo "authenticated: yes"
   echo "user: $user"
   echo "credential source: $source_desc"
@@ -34,6 +35,8 @@ fi
 
 echo "authenticated: no"
 echo "credential source tried: $source_desc"
+reason="$(printf '%s\n' "$out" | grep -E 'ERROR|Status:' | sed 's/^ *//; s/ *$//' | paste -sd ';' -)"
+[ -n "$reason" ] && echo "reason: $reason"
 if [ "$source_desc" != "stored CLI config (snyk auth)" ]; then
   echo "The credential was rejected. Check that it is valid, not expired, and for the right region (SNYK_API)."
 fi

@@ -73,8 +73,8 @@ fi
 fake_token="00000000-1111-2222-3333-444444444444"
 SNYK_TOKEN="$fake_token" sh "$SKILL/scripts/check-snyk-auth.sh" "$SNYK_BIN" >/tmp/auth-bad.out 2>&1
 rc=$?
-if [ $rc -eq 1 ] && grep -q 'rejected' /tmp/auth-bad.out; then
-  ok "invalid SNYK_TOKEN is rejected (exit 1)"
+if [ $rc -eq 1 ] && grep -q 'rejected' /tmp/auth-bad.out && grep -q 'reason:.*401' /tmp/auth-bad.out; then
+  ok "invalid SNYK_TOKEN is rejected with reason 401 (exit 1)"
 else
   bad "invalid SNYK_TOKEN is rejected" "rc=$rc $(cat /tmp/auth-bad.out)"
 fi
