@@ -20,7 +20,8 @@ images=("$@")
 [ ${#images[@]} -eq 0 ] && images=(ubuntu:24.04 buildpack-deps:bookworm-curl alpine:3.20)
 
 docker_cmd=(docker)
-docker info >/dev/null 2>&1 || docker_cmd=(sudo docker)
+# sudo resets the environment, and `docker run -e VAR` reads VAR from the client's environment.
+docker info >/dev/null 2>&1 || docker_cmd=(sudo --preserve-env=SNYK_TOKEN,SNYK_API docker)
 
 overall=0
 for image in "${images[@]}"; do
